@@ -1,0 +1,45 @@
+# Binary output
+bin/
+
+# Certificate artifacts (DO NOT commit private keys)
+certs/
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.test
+*.out
+/tmp/
+
+# Go coverage
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Audit logs
+*.audit.log
+
+# Plan/research artifacts
+.omc/
+progress.txt
+
+# IDA/Ghidra artifacts
+*.i64
+*.idb
+*.rep
+*.ghidra/
+CLAUDE.md
