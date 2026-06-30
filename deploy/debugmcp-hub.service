@@ -1,0 +1,47 @@
+[Unit]
+Description=debugMcp hub — C2 listener + IPC server for shims
+Documentation=file:///home/demo/Desktop/project/debugMcp/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=demo
+Group=demo
+
+# State dir: PSK / IPC token / hub.sock / audit log (0600, owned by demo)
+Environment=DBGMCP_STATE_DIR=/home/demo/.debugmcp
+
+# C2 transport: 0.0.0.0:7777 so target agents can call back.
+# --allow-inbound is REQUIRED to bind non-loopback; this exposes an RCE surface
+# protected only by the PSK. Keep the PSK secret. Do not bind 0.0.0.0 unless
+# agents actually need to reach this host over the network.
+ExecStart=/usr/local/bin/debugmcp-hub \
+  -listen 0.0.0.0:7777 \
+  -allow-inbound \
+  -state /home/demo/.debugmcp
+
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/demo/.debugmcp
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
