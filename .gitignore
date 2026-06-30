@@ -1,5 +1,6 @@
 # Binary output
 bin/
+dist/
 
 # Certificate artifacts (DO NOT commit private keys)
 certs/
