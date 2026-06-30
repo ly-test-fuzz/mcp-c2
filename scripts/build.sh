@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/build.sh — 按“三端”分类构建 debugMcp，产物整合到 dist/。
 #
-#   hub   端 (操作者守护进程, 本机 linux/amd64): debugmcp-hub + debugmcp-probe
+#   hub   端 (操作者守护进程, 本机 linux/amd64): debugmcp-hub + debugmcp-probe + debugmcp-cli
 #   shim  端 (Claude Code 拉起的 MCP 接入, 本机): debugmcp-shim
 #   client端 (目标机回连 agent, 交叉编译):       debugmcp-agent
 #
@@ -44,6 +44,7 @@ build_hub() {
   mkdir -p "$outdir"
   build_one "$HOST_OS" "$HOST_ARCH" cmd/hub   "$outdir/debugmcp-hub"
   build_one "$HOST_OS" "$HOST_ARCH" cmd/probe "$outdir/debugmcp-probe"
+  build_one "$HOST_OS" "$HOST_ARCH" cmd/cli   "$outdir/debugmcp-cli"
 }
 
 build_shim() {
