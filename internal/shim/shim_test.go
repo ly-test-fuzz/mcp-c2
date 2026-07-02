@@ -58,7 +58,7 @@ func TestShim_ExposesToolsAndExecs(t *testing.T) {
 	go func() { _ = ipc.Serve(ctx, ipcLn, token, h) }()
 	time.Sleep(50 * time.Millisecond) // let the IPC listener accept
 
-	sh, err := New(ctx, Config{Socket: ipcPath, Token: token, OpSession: "test-win"})
+	sh, err := New(ctx, Config{Addr: "unix:" + ipcPath, Token: token, OpSession: "test-win"})
 	if err != nil {
 		t.Fatal(err)
 	}

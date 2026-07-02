@@ -23,8 +23,8 @@ import (
 
 // Config locates the hub IPC endpoint.
 type Config struct {
-	Socket    string // unix socket path
-	Token     string // MAC token
+	Addr      string // IPC listen spec: "unix:/path" or "tcp:host:port"
+	Token     string // MAC token (sent as HMAC proof, never plaintext)
 	OpSession string // attribution id; auto if empty
 }
 
@@ -39,13 +39,17 @@ type Shim struct {
 
 // New connects to the hub and returns a Shim ready to serve.
 func New(ctx context.Context, cfg Config) (*Shim, error) {
-	if cfg.Socket == "" || cfg.Token == "" {
-		return nil, fmt.Errorf("shim: socket and token are required")
+	if cfg.Addr == "" || cfg.Token == "" {
+		return nil, fmt.Errorf("shim: addr and token are required")
 	}
 	if cfg.OpSession == "" {
 		cfg.OpSession = defaultOpSession()
 	}
-	cli, err := ipc.Dial(ctx, "unix", cfg.Socket, cfg.Token)
+	network, address, err := ipc.ParseListenSpec(cfg.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("shim: %w", err)
+	}
+	cli, err := ipc.Dial(ctx, network, address, cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("shim: connect hub: %w", err)
 	}

@@ -1,16 +1,23 @@
 // Package ipc is the shim<->hub control-plane link: a length-prefixed JSON-RPC
-// over a Unix socket (or named pipe), authenticated by a local MAC token the hub
-// writes to a 0600 file at start. This closes the Principle #1 gap: a non-owner
-// local process cannot call hub tools.
+// over a Unix socket or TCP, authenticated by an HMAC challenge-response over a
+// shared token. The hub writes the token to a 0600 file at start; the token
+// itself never crosses the wire — only HMAC-SHA256(token, nonce) does, where the
+// nonce is a fresh one-use value per connection. TCP mode lets shim and hub live
+// on different hosts; the HMAC prevents token recovery by a passive sniffer.
 package ipc
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +33,16 @@ type Handler interface {
 	Handle(method string, params json.RawMessage) (any, error)
 }
 
-// AuthMsg is the first frame from client to server.
+// ChallengeMsg is the first frame from server to client: a fresh random nonce.
+// The client must reply with AuthMsg.Auth = hex(HMAC-SHA256(token, nonce)). This
+// keeps the token off the wire — a passive sniffer cannot recover it, and each
+// connection's nonce is one-use so a captured proof cannot be replayed.
+type ChallengeMsg struct {
+	Nonce string `json:"nonce"`
+}
+
+// AuthMsg is the client's auth proof: hex(HMAC-SHA256(token, nonce)) over the
+// server-supplied nonce. The raw token is never sent.
 type AuthMsg struct {
 	Auth string `json:"auth"`
 }
@@ -35,6 +51,32 @@ type AuthMsg struct {
 type AckMsg struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+// hmacHex returns hex(HMAC-SHA256(token, nonceHex)). Both the client (to build
+// the proof) and the server (to verify it) call this. A malformed nonceHex yields
+// "" — no valid proof can match, so the handshake fails.
+func hmacHex(token, nonceHex string) string {
+	nonce, err := hex.DecodeString(nonceHex)
+	if err != nil {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write(nonce)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// ParseListenSpec splits an IPC listen spec into a net.Listen network + address.
+// "unix:/path" -> ("unix", "/path"); "tcp:host:port" -> ("tcp", "host:port").
+func ParseListenSpec(spec string) (network, address string, err error) {
+	switch {
+	case strings.HasPrefix(spec, "unix:"):
+		return "unix", strings.TrimPrefix(spec, "unix:"), nil
+	case strings.HasPrefix(spec, "tcp:"):
+		return "tcp", strings.TrimPrefix(spec, "tcp:"), nil
+	default:
+		return "", "", fmt.Errorf("ipc: bad listen spec %q (want unix:/path or tcp:host:port)", spec)
+	}
 }
 
 // Req is a client JSON-RPC request.
@@ -101,11 +143,21 @@ func Serve(ctx context.Context, ln net.Listener, token string, h Handler) error 
 		go func(c net.Conn) {
 			defer c.Close()
 			c.SetDeadline(time.Now().Add(10 * time.Second))
+			// 1. send a fresh nonce (32 bytes, one-use per connection).
+			nonce := make([]byte, 32)
+			if _, err := rand.Read(nonce); err != nil {
+				return
+			}
+			nonceHex := hex.EncodeToString(nonce)
+			if err := writeJSON(c, ChallengeMsg{Nonce: nonceHex}); err != nil {
+				return
+			}
+			// 2. read the client's HMAC proof; the token never crosses the wire.
 			var auth AuthMsg
 			if err := readJSON(c, &auth); err != nil {
 				return
 			}
-			if auth.Auth != token {
+			if !hmac.Equal([]byte(auth.Auth), []byte(hmacHex(token, nonceHex))) {
 				_ = writeJSON(c, AckMsg{OK: false, Error: "bad token"})
 				return
 			}
@@ -151,7 +203,10 @@ type Client struct {
 	done    chan struct{}
 }
 
-// Dial connects to the Unix socket at path and authenticates with token.
+// Dial connects to the hub IPC endpoint (network/address — "unix"/"/path" or
+// "tcp"/"host:port") and authenticates with token via HMAC challenge-response:
+// the server sends a nonce, the client replies with HMAC-SHA256(token, nonce).
+// The token itself never crosses the wire.
 func Dial(ctx context.Context, network, address, token string) (*Client, error) {
 	d := net.Dialer{}
 	nc, err := d.DialContext(ctx, network, address)
@@ -159,7 +214,12 @@ func Dial(ctx context.Context, network, address, token string) (*Client, error) 
 		return nil, err
 	}
 	nc.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := writeJSON(nc, AuthMsg{Auth: token}); err != nil {
+	var ch ChallengeMsg
+	if err := readJSON(nc, &ch); err != nil {
+		nc.Close()
+		return nil, err
+	}
+	if err := writeJSON(nc, AuthMsg{Auth: hmacHex(token, ch.Nonce)}); err != nil {
 		nc.Close()
 		return nil, err
 	}

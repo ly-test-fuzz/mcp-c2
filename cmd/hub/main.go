@@ -28,6 +28,7 @@ func main() {
 		listen       = flag.String("listen", "127.0.0.1:7777", "TCP addr for C2 agents")
 		allowInbound = flag.Bool("allow-inbound", false, "allow binding a non-loopback address (required for 0.0.0.0; warning: RCE surface)")
 		stateDir     = flag.String("state", defaultStateDir(), "state directory (psk, token, socket, audit)")
+		ipcListen    = flag.String("ipc-listen", "", "IPC listen spec for shims: unix:/path (default unix:<state>/hub.sock) or tcp:host:port. tcp: enables hub/shim split across hosts (HMAC auth; still prefer loopback or trusted LAN).")
 	)
 	flag.Parse()
 
@@ -51,13 +52,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen agents: %v", err)
 	}
-	ipcPath := filepath.Join(*stateDir, "hub.sock")
-	_ = os.Remove(ipcPath)
-	ipcLn, err := net.Listen("unix", ipcPath)
+	ipcSpec := *ipcListen
+	if ipcSpec == "" {
+		ipcSpec = "unix:" + filepath.Join(*stateDir, "hub.sock")
+	}
+	ipcNetwork, ipcAddr, err := ipc.ParseListenSpec(ipcSpec)
 	if err != nil {
 		log.Fatalf("listen ipc: %v", err)
 	}
-	_ = os.Chmod(ipcPath, 0o600)
+	if ipcNetwork == "tcp" && !*allowInbound && !isLoopback(ipcAddr) {
+		log.Fatalf("refusing non-loopback IPC bind %q without --allow-inbound (token sniffing = RCE)", ipcAddr)
+	}
+	if ipcNetwork == "unix" {
+		_ = os.Remove(ipcAddr) // stale socket from previous run
+	}
+	ipcLn, err := net.Listen(ipcNetwork, ipcAddr)
+	if err != nil {
+		log.Fatalf("listen ipc: %v", err)
+	}
+	if ipcNetwork == "unix" {
+		_ = os.Chmod(ipcAddr, 0o600)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -67,8 +82,8 @@ func main() {
 	go func() { _ = ipc.Serve(ctx, ipcLn, tokenStr, h) }()
 
 	log.Printf("hub: agents=%s psk=%s", *listen, hex.EncodeToString(psk))
-	log.Printf("hub: ipc=%s token=%s", ipcPath, tokenStr)
-	log.Printf("hub: ready. Claude Code MCP stdio config -> command=debugmcp-shim, env={DBGMCP_HUB_SOCKET=%s DBGMCP_HUB_TOKEN=%s}", ipcPath, tokenStr)
+	log.Printf("hub: ipc=%s token=%s", ipcSpec, tokenStr)
+	log.Printf("hub: ready. Claude Code MCP stdio config -> command=debugmcp-shim, env={DBGMCP_HUB_ADDR=%s DBGMCP_HUB_TOKEN=%s}", ipcSpec, tokenStr)
 
 	<-ctx.Done()
 	log.Printf("hub: shutting down")
