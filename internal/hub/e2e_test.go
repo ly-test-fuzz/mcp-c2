@@ -1,8 +1,12 @@
 package hub
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -74,23 +78,172 @@ func TestE2E_ExecBashSyntax(t *testing.T) {
 	}
 }
 
-func TestE2E_FileReadWrite(t *testing.T) {
+// TestE2E_UploadDownload_SingleFile drives the high-level Upload/Download with a
+// real local file on the operator (hub) side. The hub does disk I/O and streams
+// to the agent via the chunked path; only paths + {size,sha256} cross the API.
+func TestE2E_UploadDownload_SingleFile(t *testing.T) {
 	h, addr, cancel := newE2E(t)
 	defer cancel()
 	startAgent(t, context.Background(), addr, h.PSK(), 8)
 	target := waitForTarget(t, h)
 
-	path := t.TempDir() + "/e2e-file.bin"
-	payload := []byte{0x00, 0x01, 0xff, 0xfe, 0x55}
-	if _, err := h.FSWrite(FSWriteParams{Target: target, Path: path, Data: payload, Mode: 0o600}); err != nil {
-		t.Fatalf("write: %v", err)
+	// operator-side local source
+	localSrc := t.TempDir() + "/src.bin"
+	payload := make([]byte, 10*1024*1024) // 10 MiB — spans multiple 4 MiB chunks
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
 	}
-	res, err := h.FSRead(FSReadParams{Target: target, Path: path})
+	if err := writeFile(localSrc, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remotePath := t.TempDir() + "/remote.bin"
+
+	ures, err := h.Upload(UploadParams{Target: target, LocalPath: localSrc, RemotePath: remotePath, IsDir: false})
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("upload: %v", err)
 	}
-	if !bytes.Equal(res.Data, payload) {
-		t.Fatalf("file round-trip mismatch: got %v want %v", res.Data, payload)
+	if ures.Err != "" {
+		t.Fatalf("upload err: %s", ures.Err)
+	}
+	if ures.Size != int64(len(payload)) {
+		t.Fatalf("upload size: got %d want %d", ures.Size, len(payload))
+	}
+	if ures.Sha256 != sha256Hex(payload) {
+		t.Fatalf("upload sha mismatch: got %s want %s", ures.Sha256, sha256Hex(payload))
+	}
+
+	// verify file landed verbatim on the agent side (target = same process here)
+	got, err := osReadFile(remotePath)
+	if err != nil {
+		t.Fatalf("agent-side read: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("uploaded content mismatch: got %d want %d bytes", len(got), len(payload))
+	}
+
+	// download back to a different local path
+	localDst := t.TempDir() + "/dst.bin"
+	dres, err := h.Download(DownloadParams{Target: target, RemotePath: remotePath, LocalPath: localDst, IsDir: false})
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if dres.Err != "" {
+		t.Fatalf("download err: %s", dres.Err)
+	}
+	got2, err := osReadFile(localDst)
+	if err != nil {
+		t.Fatalf("operator-side read: %v", err)
+	}
+	if !bytes.Equal(got2, payload) {
+		t.Fatalf("downloaded content mismatch")
+	}
+}
+
+// TestE2E_UploadDownload_Dir round-trips a multi-level directory tree (incl. a
+// subdir + nested file) through tar streaming both ways.
+func TestE2E_UploadDownload_Dir(t *testing.T) {
+	h, addr, cancel := newE2E(t)
+	defer cancel()
+	startAgent(t, context.Background(), addr, h.PSK(), 8)
+	target := waitForTarget(t, h)
+
+	localSrc := t.TempDir() + "/srcdir"
+	mustMkdirAll(localSrc + "/sub")
+	if err := writeFile(localSrc+"/a.txt", []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(localSrc+"/sub/b.txt", []byte("beta"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remotePath := t.TempDir() + "/remotedir"
+
+	ures, err := h.Upload(UploadParams{Target: target, LocalPath: localSrc, RemotePath: remotePath, IsDir: true})
+	if err != nil || ures.Err != "" {
+		t.Fatalf("upload dir: %v %+v", err, ures)
+	}
+	// verify entries landed
+	gotA, err := osReadFile(remotePath + "/a.txt")
+	if err != nil {
+		t.Fatalf("remote a.txt: %v", err)
+	}
+	if string(gotA) != "alpha" {
+		t.Errorf("remote a.txt = %q", gotA)
+	}
+	gotB, err := osReadFile(remotePath + "/sub/b.txt")
+	if err != nil {
+		t.Fatalf("remote sub/b.txt: %v", err)
+	}
+	if string(gotB) != "beta" {
+		t.Errorf("remote sub/b.txt = %q", gotB)
+	}
+
+	// download the directory back
+	localDst := t.TempDir() + "/dstdir"
+	dres, err := h.Download(DownloadParams{Target: target, RemotePath: remotePath, LocalPath: localDst, IsDir: true})
+	if err != nil || dres.Err != "" {
+		t.Fatalf("download dir: %v %+v", err, dres)
+	}
+	gotA2, _ := osReadFile(localDst + "/a.txt")
+	if string(gotA2) != "alpha" {
+		t.Errorf("downloaded a.txt = %q", gotA2)
+	}
+	gotB2, _ := osReadFile(localDst + "/sub/b.txt")
+	if string(gotB2) != "beta" {
+		t.Errorf("downloaded sub/b.txt = %q", gotB2)
+	}
+}
+
+// TestE2E_Upload_TarFileAsFile sends a real .tar archive with is_dir=false and
+// confirms the agent keeps it as a file (not unpacked).
+func TestE2E_Upload_TarFileAsFile(t *testing.T) {
+	h, addr, cancel := newE2E(t)
+	defer cancel()
+	startAgent(t, context.Background(), addr, h.PSK(), 8)
+	target := waitForTarget(t, h)
+
+	// build a real tar archive in memory: one file "inside.txt"
+	var tarBuf bytes.Buffer
+	tw := newTarWriter(&tarBuf)
+	writeTarEntry(tw, "inside.txt", []byte("payload"))
+	closeTarWriter(tw)
+	localSrc := t.TempDir() + "/archive.tar"
+	if err := writeFile(localSrc, tarBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remotePath := t.TempDir() + "/archive.tar"
+
+	ures, err := h.Upload(UploadParams{Target: target, LocalPath: localSrc, RemotePath: remotePath, IsDir: false})
+	if err != nil || ures.Err != "" {
+		t.Fatalf("upload tar-as-file: %v %+v", err, ures)
+	}
+	got, err := osReadFile(remotePath)
+	if err != nil {
+		t.Fatalf("remote archive read: %v", err)
+	}
+	if !bytes.Equal(got, tarBuf.Bytes()) {
+		t.Fatalf("tar file not preserved verbatim: got %d want %d bytes", len(got), tarBuf.Len())
+	}
+}
+
+// TestE2E_Download_IsDirMismatch: remote is a regular file but caller says is_dir=true.
+func TestE2E_Download_IsDirMismatch(t *testing.T) {
+	h, addr, cancel := newE2E(t)
+	defer cancel()
+	startAgent(t, context.Background(), addr, h.PSK(), 8)
+	target := waitForTarget(t, h)
+
+	// stage a single remote file via upload (is_dir=false)
+	remotePath := t.TempDir() + "/plain.txt"
+	localStage := t.TempDir() + "/stage.txt"
+	writeFile(localStage, []byte("x"), 0o644)
+	if _, err := h.Upload(UploadParams{Target: target, LocalPath: localStage, RemotePath: remotePath, IsDir: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	localDst := t.TempDir() + "/out"
+	_, err := h.Download(DownloadParams{Target: target, RemotePath: remotePath, LocalPath: localDst, IsDir: true})
+	if err == nil {
+		t.Fatalf("expected is_dir mismatch error, got nil")
 	}
 }
 
@@ -167,3 +320,26 @@ func TestE2E_OccupancyBusy(t *testing.T) {
 	_, _ = h.ShellClose(ShellCloseParams{Target: target, Sid: o2.Sid})
 	_, _ = h.ShellClose(ShellCloseParams{Target: target, Sid: sids[1]})
 }
+
+// --- test helpers (thin wrappers to keep the upload/download tests readable) ---
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	return os.WriteFile(path, data, mode)
+}
+
+func osReadFile(path string) ([]byte, error) { return os.ReadFile(path) }
+
+func mustMkdirAll(path string) {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		panic(err)
+	}
+}
+
+func newTarWriter(w io.Writer) *tar.Writer { return tar.NewWriter(w) }
+
+func writeTarEntry(tw *tar.Writer, name string, data []byte) {
+	_ = tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(data))})
+	_, _ = tw.Write(data)
+}
+
+func closeTarWriter(tw *tar.Writer) { _ = tw.Close() }

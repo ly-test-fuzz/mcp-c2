@@ -65,7 +65,7 @@ func (a *Agent) shellOpen(env *wire.Envelope, req *wire.ShellOpen) {
 
 	shell := req.Shell
 	if shell == "" {
-		shell = loginShell()
+		shell = resolveShell()
 	}
 	p, err := openPTY(shell, req.Cols, req.Rows)
 	if err != nil {

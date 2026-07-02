@@ -56,6 +56,19 @@ const (
 	MsgFSStatResult
 	MsgGoodbye
 	MsgError
+	// Chunked file transfer (v1 protocol extension). Open returns a session id
+	// carried in Envelope.Sid; each chunk is its own Seq-correlated RPC; commit
+	// does the full-file sha256 check. Mirrors the shell open/send/close pattern.
+	MsgFSWriteOpen
+	MsgFSWriteOpenResult
+	MsgFSWriteChunk
+	MsgFSWriteChunkResult
+	MsgFSWriteCommit
+	MsgFSWriteCommitResult
+	MsgFSReadOpen
+	MsgFSReadOpenResult
+	MsgFSReadChunk
+	MsgFSReadChunkResult
 )
 
 func (m MsgType) String() string {
@@ -112,6 +125,26 @@ func (m MsgType) String() string {
 		return "Goodbye"
 	case MsgError:
 		return "Error"
+	case MsgFSWriteOpen:
+		return "FSWriteOpen"
+	case MsgFSWriteOpenResult:
+		return "FSWriteOpenResult"
+	case MsgFSWriteChunk:
+		return "FSWriteChunk"
+	case MsgFSWriteChunkResult:
+		return "FSWriteChunkResult"
+	case MsgFSWriteCommit:
+		return "FSWriteCommit"
+	case MsgFSWriteCommitResult:
+		return "FSWriteCommitResult"
+	case MsgFSReadOpen:
+		return "FSReadOpen"
+	case MsgFSReadOpenResult:
+		return "FSReadOpenResult"
+	case MsgFSReadChunk:
+		return "FSReadChunk"
+	case MsgFSReadChunkResult:
+		return "FSReadChunkResult"
 	default:
 		return fmt.Sprintf("MsgType(%d)", uint8(m))
 	}
@@ -267,8 +300,10 @@ type FSRead struct {
 }
 
 type FSReadResult struct {
-	Data []byte `json:"data,omitempty"`
-	Err  string `json:"err,omitempty"`
+	Data   []byte `json:"data,omitempty"`
+	Err    string `json:"err,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+	Sha256 string `json:"sha256,omitempty"`
 }
 
 type FSWrite struct {
@@ -278,7 +313,9 @@ type FSWrite struct {
 }
 
 type FSOpResult struct {
-	Err string `json:"err,omitempty"`
+	Err    string `json:"err,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+	Sha256 string `json:"sha256,omitempty"`
 }
 
 type DirEntry struct {
@@ -312,6 +349,83 @@ type FileInfo struct {
 type FSStatResult struct {
 	Stat *FileInfo `json:"stat,omitempty"`
 	Err  string    `json:"err,omitempty"`
+}
+
+// --- Chunked file transfer (v1 extension) ---
+// Upload: open (allocate temp file + session) -> chunk*N (per-block sha256,
+// re-send on mismatch) -> commit (full-file sha256 + atomic rename). Download:
+// open (meta + total sha256) -> chunk*N (per-block sha256 + EOF). The transfer
+// session id is carried in Envelope.Sid; each chunk is its own Seq-correlated RPC.
+
+type FSWriteOpen struct {
+	Path        string `json:"path"`
+	Mode        uint32 `json:"mode,omitempty"` // os.FileMode; 0 => 0644
+	TotalSize   int64  `json:"total_size,omitempty"`
+	TotalSha256 string `json:"total_sha256,omitempty"`
+	ChunkSize   int64  `json:"chunk_size"`
+	IsDir       bool   `json:"is_dir,omitempty"` // true = tar 流(目录), false = 单文件
+}
+
+type FSWriteOpenResult struct {
+	UploadID string `json:"upload_id,omitempty"`
+	Err      string `json:"err,omitempty"`
+}
+
+type FSWriteChunk struct {
+	Index  int64  `json:"index"`
+	Offset int64  `json:"offset"`
+	Data   []byte `json:"data"`
+	Sha256 string `json:"sha256"` // sha256(Data); agent verifies BEFORE writing
+}
+
+type FSWriteChunkResult struct {
+	Index int64  `json:"index"`
+	OK    bool   `json:"ok"` // false => hash mismatch, agent did NOT write; caller re-sends
+	Err   string `json:"err,omitempty"`
+}
+
+// FSWriteCommit 是 commit 请求体。会话由 Envelope.Sid 标识。WantSize/WantSha256 在
+// commit 阶段做端到端完整性校验（hub 流式累加，agent 重算后比对），取代 open 阶段校验。
+type FSWriteCommit struct {
+	WantSize   int64  `json:"want_size"`
+	WantSha256 string `json:"want_sha256"`
+	IsDir      bool   `json:"is_dir,omitempty"`
+}
+
+type FSWriteCommitResult struct {
+	Size    int64    `json:"size"`
+	Sha256  string   `json:"sha256,omitempty"`  // full-file/stream sha256 as written (agent-computed)
+	Entries []string `json:"entries,omitempty"` // is_dir 模式下已落地的相对路径; 失败时也返回供清理
+	Err     string   `json:"err,omitempty"`
+}
+
+type FSReadOpen struct {
+	Path      string `json:"path"`
+	ChunkSize int64  `json:"chunk_size,omitempty"`
+	IsDir     bool   `json:"is_dir,omitempty"` // true = tar 流(目录), false = 单文件
+}
+
+type FSReadOpenResult struct {
+	DownloadID  string `json:"download_id,omitempty"`
+	TotalSize   int64  `json:"total_size,omitempty"`           // is_dir=false 时为文件大小; tar 流下流读尽才确定
+	TotalSha256 string `json:"total_sha256,omitempty"`         // agent 流式算出
+	ChunkSize   int64  `json:"chunk_size"`
+	IsDir       bool   `json:"is_dir,omitempty"`
+	NEntries    int    `json:"n_entries,omitempty"`            // is_dir 模式下的 entry 数
+	Err         string `json:"err,omitempty"`
+}
+
+type FSReadChunk struct {
+	Index  int64 `json:"index"`
+	Offset int64 `json:"offset"`
+}
+
+type FSReadChunkResult struct {
+	Index  int64  `json:"index"`
+	Data   []byte `json:"data,omitempty"`
+	Sha256 string `json:"sha256,omitempty"` // sha256(Data)
+	EOF    bool   `json:"eof"`
+	Err    string `json:"err,omitempty"`
 }
 
 type ErrorMsg struct {

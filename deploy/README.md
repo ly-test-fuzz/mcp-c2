@@ -46,30 +46,29 @@ sudo journalctl -u debugmcp-hub -f        # 实时日志
 > 不要把 PSK 泄漏给目标机以外的人。若 agent 不需要跨网络回连，改成 `127.0.0.1:7777`
 > 并去掉 `--allow-inbound` 最安全。
 
-## 4. 配置 Claude Code 全局 MCP
+## 4. 配置 Claude Code 全局 MCP（user scope）
 
 hub 首次启动会生成 IPC token，从 state 目录读取：
 
 ```bash
-SOCK=~/.debugmcp/hub.sock
 TOKEN=$(cat ~/.debugmcp/ipc.token)
 ```
 
-写入 `~/.claude/.mcp.json`（全局生效，所有项目可用）：
+用户级（user scope）配置由 Claude Code 存在 `~/.claude.json` 的**顶层 `mcpServers`** 键（所有项目可用）。**用 CLI 写入最安全**（避免手编这个含大量状态的大文件）：
 
-```jsonc
-{
-  "mcpServers": {
-    "debugmcp": {
-      "command": "/usr/local/bin/debugmcp-shim",
-      "env": {
-        "DBGMCP_HUB_SOCKET": "/home/demo/.debugmcp/hub.sock",
-        "DBGMCP_HUB_TOKEN": "<上面的 TOKEN>"
-      }
-    }
-  }
-}
+```bash
+claude mcp add-json --scope user debugmcp \
+  "{\"command\":\"/usr/local/bin/debugmcp-shim\",\"env\":{\"DBGMCP_HUB_SOCKET\":\"$HOME/.debugmcp/hub.sock\",\"DBGMCP_HUB_TOKEN\":\"$TOKEN\"}}"
 ```
+
+验证：
+
+```bash
+claude mcp get debugmcp     # 应显示 Scope: User config
+claude mcp list             # debugmcp 出现且 Connected
+```
+
+> **注意位置**：用户级 MCP 配置在 `~/.claude.json` 顶层 `mcpServers`，**不是** `~/.claude/.mcp.json`（后者 Claude Code 不读取）。手编时把条目放进顶层 `mcpServers`，不要嵌进 `projects.*.mcpServers`（那是 local scope，仅当前项目）。
 
 重启 Claude Code 后即可使用 debugmcp 工具。
 

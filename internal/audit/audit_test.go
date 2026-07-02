@@ -34,7 +34,7 @@ func TestLogAppendOnlyAndFsync(t *testing.T) {
 		t.Fatal(err)
 	}
 	l2.now = func() time.Time { return t0.Add(time.Second) }
-	if err := l2.Log(Record{Op: "file_read", Target: "t1", Result: "ok", Bytes: 42}); err != nil {
+	if err := l2.Log(Record{Op: "upload", Target: "t1", Result: "ok", Bytes: 42}); err != nil {
 		t.Fatal(err)
 	}
 	if err := l2.Close(); err != nil {
@@ -70,7 +70,7 @@ func TestRedactor(t *testing.T) {
 	dir := t.TempDir()
 	l, _ := Open(filepath.Join(dir, "a.jsonl"))
 	l.SetRedactor(func(s string) string { return strings.ReplaceAll(s, "secret", "***") })
-	if err := l.Log(Record{Op: "file_write", Args: "token=secret path=/x"}); err != nil {
+	if err := l.Log(Record{Op: "download", Args: "token=secret path=/x"}); err != nil {
 		t.Fatal(err)
 	}
 	l.Close()

@@ -17,7 +17,8 @@ import (
 )
 
 // TestShim_ExposesToolsAndExecs is the MCP spike: a real MCP client discovers the
-// shim's tools (>= 10) and an end-to-end exec (client -> shim -> ipc -> hub -> agent)
+// shim's tools (>= 11: 4 control-plane + exec + 4 shell + signal + 2 upload/download)
+// and an end-to-end exec (client -> shim -> ipc -> hub -> agent)
 // returns the expected bash-syntax output.
 func TestShim_ExposesToolsAndExecs(t *testing.T) {
 	psk := bytes.Repeat([]byte{0x33}, 32)
@@ -77,12 +78,12 @@ func TestShim_ExposesToolsAndExecs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(lr.Tools) < 10 {
+	if len(lr.Tools) < 11 {
 		names := make([]string, 0, len(lr.Tools))
 		for _, tt := range lr.Tools {
 			names = append(names, tt.Name)
 		}
-		t.Fatalf("expected >=10 tools exposed, got %d: %v", len(lr.Tools), names)
+		t.Fatalf("expected >=11 tools exposed, got %d: %v", len(lr.Tools), names)
 	}
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{

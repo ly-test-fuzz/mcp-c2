@@ -43,4 +43,6 @@ progress.txt
 *.idb
 *.rep
 *.ghidra/
+docs
+temp
 CLAUDE.md

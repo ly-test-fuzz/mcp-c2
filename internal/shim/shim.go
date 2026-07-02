@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -222,78 +223,44 @@ func (s *Shim) registerTools(srv *mcp.Server) {
 			return jsonResult(ack), nil
 		})
 
-	add("file_read", "Read a file (binary-safe; size-capped).", `{"type":"object","properties":{"path":{"type":"string"},"target":{"type":"string"}},"required":["path"]}`,
+	add("upload", "Transfer a file or directory from the operator (hub) local disk to the target. scp-style: pass two paths plus is_dir; the file BYTES never enter this context. is_dir=true streams the directory as a tar (recursive, like scp -r); is_dir=false sends a single file verbatim (a real .tar file is treated as a normal file, not unpacked). Use exec(ls/stat) for listing/stat.", `{"type":"object","properties":{"local_path":{"type":"string"},"remote_path":{"type":"string"},"is_dir":{"type":"boolean"},"target":{"type":"string"}},"required":["local_path","remote_path","is_dir"]}`,
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var p struct {
-				Target string `json:"target"`
-				Path   string `json:"path"`
+				Target     string `json:"target"`
+				LocalPath  string `json:"local_path"`
+				RemotePath string `json:"remote_path"`
+				IsDir      bool   `json:"is_dir"`
 			}
 			_ = json.Unmarshal(req.Params.Arguments, &p)
 			t, err := s.resolveTarget(p.Target)
 			if err != nil {
 				return errResult(err), nil
 			}
-			var out wire.FSReadResult
-			if err := s.cli.Call(ctx, "file_read", hub.FSReadParams{OpSession: s.cfg.OpSession, Target: t, Path: p.Path}, &out); err != nil {
+			var out hub.TransferResult
+			if err := s.cli.Call(ctx, "upload", hub.UploadParams{OpSession: s.cfg.OpSession, Target: t, LocalPath: p.LocalPath, RemotePath: p.RemotePath, IsDir: p.IsDir}, &out); err != nil {
 				return errResult(err), nil
 			}
-			return jsonResult(out), nil
+			return transferResult("uploaded", p.LocalPath, p.RemotePath, out), nil
 		})
 
-	add("file_write", "Write a file (mode optional, default 0644).", `{"type":"object","properties":{"path":{"type":"string"},"data":{"type":"string"},"mode":{"type":"integer"},"target":{"type":"string"}},"required":["path","data"]}`,
+	add("download", "Transfer a file or directory from the target to the operator (hub) local disk. scp-style: pass two paths plus is_dir; the file BYTES never enter this context. is_dir=true streams the directory as a tar (recursive, like scp -r); is_dir=false fetches a single file verbatim.", `{"type":"object","properties":{"remote_path":{"type":"string"},"local_path":{"type":"string"},"is_dir":{"type":"boolean"},"target":{"type":"string"}},"required":["remote_path","local_path","is_dir"]}`,
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var p struct {
-				Target string `json:"target"`
-				Path   string `json:"path"`
-				Data   string `json:"data"`
-				Mode   uint32 `json:"mode"`
+				Target     string `json:"target"`
+				RemotePath string `json:"remote_path"`
+				LocalPath  string `json:"local_path"`
+				IsDir      bool   `json:"is_dir"`
 			}
 			_ = json.Unmarshal(req.Params.Arguments, &p)
 			t, err := s.resolveTarget(p.Target)
 			if err != nil {
 				return errResult(err), nil
 			}
-			var out wire.FSOpResult
-			if err := s.cli.Call(ctx, "file_write", hub.FSWriteParams{OpSession: s.cfg.OpSession, Target: t, Path: p.Path, Data: []byte(p.Data), Mode: p.Mode}, &out); err != nil {
+			var out hub.TransferResult
+			if err := s.cli.Call(ctx, "download", hub.DownloadParams{OpSession: s.cfg.OpSession, Target: t, RemotePath: p.RemotePath, LocalPath: p.LocalPath, IsDir: p.IsDir}, &out); err != nil {
 				return errResult(err), nil
 			}
-			return jsonResult(out), nil
-		})
-
-	add("file_list", "List a directory.", `{"type":"object","properties":{"path":{"type":"string"},"target":{"type":"string"}},"required":["path"]}`,
-		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			var p struct {
-				Target string `json:"target"`
-				Path   string `json:"path"`
-			}
-			_ = json.Unmarshal(req.Params.Arguments, &p)
-			t, err := s.resolveTarget(p.Target)
-			if err != nil {
-				return errResult(err), nil
-			}
-			var out wire.FSListResult
-			if err := s.cli.Call(ctx, "file_list", hub.FSListParams{OpSession: s.cfg.OpSession, Target: t, Path: p.Path}, &out); err != nil {
-				return errResult(err), nil
-			}
-			return jsonResult(out), nil
-		})
-
-	add("file_stat", "Stat a file/directory.", `{"type":"object","properties":{"path":{"type":"string"},"target":{"type":"string"}},"required":["path"]}`,
-		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			var p struct {
-				Target string `json:"target"`
-				Path   string `json:"path"`
-			}
-			_ = json.Unmarshal(req.Params.Arguments, &p)
-			t, err := s.resolveTarget(p.Target)
-			if err != nil {
-				return errResult(err), nil
-			}
-			var out wire.FSStatResult
-			if err := s.cli.Call(ctx, "file_stat", hub.FSStatParams{OpSession: s.cfg.OpSession, Target: t, Path: p.Path}, &out); err != nil {
-				return errResult(err), nil
-			}
-			return jsonResult(out), nil
+			return transferResult("downloaded", p.RemotePath, p.LocalPath, out), nil
 		})
 
 	add("list_sessions", "List all active shell sessions across targets (with op_session attribution).", `{"type":"object"}`,
@@ -345,6 +312,30 @@ func execResult(r wire.ExecResult) *mcp.CallToolResult {
 			&mcp.TextContent{Text: string(b)},
 		},
 		IsError: r.ExitCode != 0,
+	}
+}
+
+// transferResult 把一次 upload/download 的结果渲染成人类可读摘要 + 原始 JSON。
+// verb = "uploaded" / "downloaded"; src/dst 是两个路径。
+func transferResult(verb, src, dst string, r hub.TransferResult) *mcp.CallToolResult {
+	summary := fmt.Sprintf("%s %s -> %s (size=%d sha256=%s", verb, src, dst, r.Size, r.Sha256)
+	if r.NEntries > 0 {
+		summary += fmt.Sprintf(" entries=%d", r.NEntries)
+	}
+	summary += fmt.Sprintf(" %dms)", r.DurationMs)
+	if r.Err != "" {
+		summary += "\nERROR: " + r.Err
+		if len(r.Entries) > 0 {
+			summary += "\npartial entries already written: " + strings.Join(r.Entries, ", ")
+		}
+	}
+	b, _ := json.Marshal(r)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: summary},
+			&mcp.TextContent{Text: string(b)},
+		},
+		IsError: r.Err != "",
 	}
 }
 

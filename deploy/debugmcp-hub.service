@@ -1,6 +1,6 @@
 [Unit]
 Description=debugMcp hub — C2 listener + IPC server for shims
-Documentation=file:///home/demo/Desktop/project/debugMcp/README.md
+Documentation=file:///home/demo/Desktop/project/mcp-c2/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -23,25 +23,6 @@ ExecStart=/usr/local/bin/debugmcp-hub \
 
 Restart=on-failure
 RestartSec=2
-
-# Hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/home/demo/.debugmcp
-ProtectHome=read-only
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
-CapabilityBoundingSet=
-AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

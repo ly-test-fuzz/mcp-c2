@@ -214,3 +214,75 @@ func TestConnConcurrentWrites(t *testing.T) {
 		t.Fatalf("expected %d unique seqs, got %d", N, len(got))
 	}
 }
+
+// TestRoundTripFSChunkMessages covers the chunked-transfer message bodies
+// (binary-safe Data via base64) and the new MsgType String() mappings.
+func TestRoundTripFSChunkMessages(t *testing.T) {
+	payload := []byte{0x00, 0xff, 0xfe, 0x55, 0x01, 0x7f, 0x80}
+	wo := roundTrip[FSWriteOpen](t, MsgFSWriteOpen, &FSWriteOpen{
+		Path: "/tmp/x", Mode: 0o600, TotalSize: 12345, TotalSha256: "abc123", ChunkSize: 4096,
+	})
+	if wo.Path != "/tmp/x" || wo.TotalSize != 12345 || wo.TotalSha256 != "abc123" || wo.ChunkSize != 4096 {
+		t.Fatalf("FSWriteOpen mismatch: %+v", wo)
+	}
+	wc := roundTrip[FSWriteChunk](t, MsgFSWriteChunk, &FSWriteChunk{
+		Index: 2, Offset: 8192, Data: payload, Sha256: "deadbeef",
+	})
+	if wc.Index != 2 || wc.Offset != 8192 || wc.Sha256 != "deadbeef" || !bytes.Equal(wc.Data, payload) {
+		t.Fatalf("FSWriteChunk mismatch: %+v", wc)
+	}
+	// FSWriteCommit request body (new: carries WantSize/WantSha256/IsDir).
+	wcom := roundTrip[FSWriteCommit](t, MsgFSWriteCommit, &FSWriteCommit{
+		WantSize: 999, WantSha256: "cafe", IsDir: true,
+	})
+	if wcom.WantSize != 999 || wcom.WantSha256 != "cafe" || !wcom.IsDir {
+		t.Fatalf("FSWriteCommit mismatch: %+v", wcom)
+	}
+	// FSWriteOpen with IsDir flag.
+	wod := roundTrip[FSWriteOpen](t, MsgFSWriteOpen, &FSWriteOpen{Path: "/d", IsDir: true, ChunkSize: 4096})
+	if !wod.IsDir || wod.Path != "/d" {
+		t.Fatalf("FSWriteOpen IsDir mismatch: %+v", wod)
+	}
+	wcr := roundTrip[FSWriteChunkResult](t, MsgFSWriteChunkResult, &FSWriteChunkResult{Index: 2, OK: false})
+	if wcr.Index != 2 || wcr.OK {
+		t.Fatalf("FSWriteChunkResult mismatch: %+v", wcr)
+	}
+	ror := roundTrip[FSReadOpenResult](t, MsgFSReadOpenResult, &FSReadOpenResult{
+		DownloadID: "d-1", TotalSize: 99, TotalSha256: "ff", ChunkSize: 4096,
+	})
+	if ror.DownloadID != "d-1" || ror.TotalSize != 99 || ror.TotalSha256 != "ff" {
+		t.Fatalf("FSReadOpenResult mismatch: %+v", ror)
+	}
+	// FSWriteCommitResult with Entries (is_dir commit reports landed entries).
+	wcres := roundTrip[FSWriteCommitResult](t, MsgFSWriteCommitResult, &FSWriteCommitResult{
+		Size: 42, Sha256: "abcd", Entries: []string{"a.txt", "sub/b.txt"},
+	})
+	if wcres.Size != 42 || wcres.Sha256 != "abcd" || len(wcres.Entries) != 2 || wcres.Entries[1] != "sub/b.txt" {
+		t.Fatalf("FSWriteCommitResult Entries mismatch: %+v", wcres)
+	}
+	rcr := roundTrip[FSReadChunkResult](t, MsgFSReadChunkResult, &FSReadChunkResult{
+		Index: 3, Data: payload, Sha256: "x", EOF: true,
+	})
+	if rcr.Index != 3 || !rcr.EOF || !bytes.Equal(rcr.Data, payload) {
+		t.Fatalf("FSReadChunkResult mismatch: %+v", rcr)
+	}
+	for _, c := range []struct {
+		m MsgType
+		s string
+	}{
+		{MsgFSWriteOpen, "FSWriteOpen"},
+		{MsgFSWriteOpenResult, "FSWriteOpenResult"},
+		{MsgFSWriteChunk, "FSWriteChunk"},
+		{MsgFSWriteChunkResult, "FSWriteChunkResult"},
+		{MsgFSWriteCommit, "FSWriteCommit"},
+		{MsgFSWriteCommitResult, "FSWriteCommitResult"},
+		{MsgFSReadOpen, "FSReadOpen"},
+		{MsgFSReadOpenResult, "FSReadOpenResult"},
+		{MsgFSReadChunk, "FSReadChunk"},
+		{MsgFSReadChunkResult, "FSReadChunkResult"},
+	} {
+		if got := c.m.String(); got != c.s {
+			t.Errorf("MsgType String(%d): got %q want %q", c.m, got, c.s)
+		}
+	}
+}

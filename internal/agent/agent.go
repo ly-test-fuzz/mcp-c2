@@ -46,6 +46,10 @@ type Agent struct {
 	mu      sync.Mutex
 	shells  map[string]*shellSession
 	nextSid uint64
+
+	fsMu      sync.Mutex
+	uploads   map[string]*chunkedUpload
+	downloads map[string]*chunkedDownload
 }
 
 // New constructs an Agent (does not connect).
@@ -56,7 +60,10 @@ func New(o Options) *Agent {
 	if o.ID == "" {
 		o.ID = autoID()
 	}
-	return &Agent{opts: o, shells: make(map[string]*shellSession)}
+	return &Agent{
+		opts: o, shells: make(map[string]*shellSession),
+		uploads: make(map[string]*chunkedUpload), downloads: make(map[string]*chunkedDownload),
+	}
 }
 
 // Run daemonizes (unless NoDaemon), dials the hub, handshakes, and serves until
@@ -88,7 +95,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) sendHello() error {
 	hostname, _ := os.Hostname()
-	shell := loginShell()
+	shell := resolveShell()
 	hello := &wire.Hello{
 		AgentID:  a.opts.ID,
 		Hostname: hostname,
@@ -175,18 +182,41 @@ func (a *Agent) handle(env *wire.Envelope) {
 		}
 		a.shellSignal(env, req)
 
-	case wire.MsgFSRead:
-		req, _ := wire.Decode[wire.FSRead](env)
-		a.fsRead(env, req)
-	case wire.MsgFSWrite:
-		req, _ := wire.Decode[wire.FSWrite](env)
-		a.fsWrite(env, req)
-	case wire.MsgFSList:
-		req, _ := wire.Decode[wire.FSList](env)
-		a.fsList(env, req)
-	case wire.MsgFSStat:
-		req, _ := wire.Decode[wire.FSStat](env)
-		a.fsStat(env, req)
+	case wire.MsgFSWriteOpen:
+		req, err := wire.Decode[wire.FSWriteOpen](env)
+		if err != nil {
+			a.replyErr(env.Seq, env.Sid, "bad_request", err.Error())
+			return
+		}
+		a.fsWriteOpen(env, req)
+	case wire.MsgFSWriteChunk:
+		req, err := wire.Decode[wire.FSWriteChunk](env)
+		if err != nil {
+			a.replyErr(env.Seq, env.Sid, "bad_request", err.Error())
+			return
+		}
+		a.fsWriteChunk(env, req)
+	case wire.MsgFSWriteCommit:
+		req, err := wire.Decode[wire.FSWriteCommit](env)
+		if err != nil {
+			a.replyErr(env.Seq, env.Sid, "bad_request", err.Error())
+			return
+		}
+		a.fsWriteCommit(env, req)
+	case wire.MsgFSReadOpen:
+		req, err := wire.Decode[wire.FSReadOpen](env)
+		if err != nil {
+			a.replyErr(env.Seq, env.Sid, "bad_request", err.Error())
+			return
+		}
+		a.fsReadOpen(env, req)
+	case wire.MsgFSReadChunk:
+		req, err := wire.Decode[wire.FSReadChunk](env)
+		if err != nil {
+			a.replyErr(env.Seq, env.Sid, "bad_request", err.Error())
+			return
+		}
+		a.fsReadChunk(env, req)
 
 	case wire.MsgGoodbye:
 		_ = a.conn.Close()
@@ -200,7 +230,7 @@ func (a *Agent) handle(env *wire.Envelope) {
 func (a *Agent) execOne(req *wire.ExecRequest) *wire.ExecResult {
 	shell := req.Shell
 	if shell == "" {
-		shell = loginShell()
+		shell = resolveShell()
 	}
 	args, err := shellWrapArgs(shell, req.Command)
 	if err != nil {
@@ -252,72 +282,53 @@ func (a *Agent) execOne(req *wire.ExecRequest) *wire.ExecResult {
 }
 
 // --- filesystem ---
-
-func (a *Agent) fsRead(env *wire.Envelope, req *wire.FSRead) {
-	data, err := os.ReadFile(req.Path)
-	if err != nil {
-		a.reply(env.Seq, env.Sid, wire.MsgFSReadResult, &wire.FSReadResult{Err: err.Error()})
-		return
-	}
-	if int64(len(data)) > DefaultMaxFileSize {
-		a.reply(env.Seq, env.Sid, wire.MsgFSReadResult, &wire.FSReadResult{Err: fmt.Sprintf("file exceeds %d bytes", DefaultMaxFileSize)})
-		return
-	}
-	a.reply(env.Seq, env.Sid, wire.MsgFSReadResult, &wire.FSReadResult{Data: data})
-}
-
-func (a *Agent) fsWrite(env *wire.Envelope, req *wire.FSWrite) {
-	if int64(len(req.Data)) > DefaultMaxFileSize {
-		a.reply(env.Seq, env.Sid, wire.MsgFSWriteResult, &wire.FSOpResult{Err: fmt.Sprintf("payload exceeds %d bytes", DefaultMaxFileSize)})
-		return
-	}
-	mode := os.FileMode(req.Mode)
-	if mode == 0 {
-		mode = 0o644
-	}
-	if err := os.WriteFile(req.Path, req.Data, mode); err != nil {
-		a.reply(env.Seq, env.Sid, wire.MsgFSWriteResult, &wire.FSOpResult{Err: err.Error()})
-		return
-	}
-	a.reply(env.Seq, env.Sid, wire.MsgFSWriteResult, &wire.FSOpResult{})
-}
-
-func (a *Agent) fsList(env *wire.Envelope, req *wire.FSList) {
-	entries, err := os.ReadDir(req.Path)
-	if err != nil {
-		a.reply(env.Seq, env.Sid, wire.MsgFSListResult, &wire.FSListResult{Err: err.Error()})
-		return
-	}
-	out := make([]wire.DirEntry, 0, len(entries))
-	for _, e := range entries {
-		info, _ := e.Info()
-		out = append(out, wire.DirEntry{Name: e.Name(), IsDir: e.IsDir(), Mode: uint32(info.Mode()), Size: info.Size()})
-	}
-	a.reply(env.Seq, env.Sid, wire.MsgFSListResult, &wire.FSListResult{Entries: out})
-}
-
-func (a *Agent) fsStat(env *wire.Envelope, req *wire.FSStat) {
-	info, err := os.Stat(req.Path)
-	if err != nil {
-		a.reply(env.Seq, env.Sid, wire.MsgFSStatResult, &wire.FSStatResult{Err: err.Error()})
-		return
-	}
-	a.reply(env.Seq, env.Sid, wire.MsgFSStatResult, &wire.FSStatResult{Stat: &wire.FileInfo{
-		Name: filepath.Base(req.Path), Size: info.Size(), Mode: uint32(info.Mode()),
-		IsDir: info.IsDir(), ModTimeMs: info.ModTime().UnixMilli(),
-	}})
-}
+// 单发 FSRead/FSWrite/FSList/FSStat 已移除；upload/download 走分块路径（见 agent_fs_chunk.go）。
+// file_list/file_stat 现在由 exec(ls/stat) 替代。
 
 // --- helpers ---
 
-func loginShell() string {
-	if s := os.Getenv("SHELL"); s != "" {
-		return s
-	}
+// resolveShell returns the shell the agent should use by default for one-shot
+// exec and interactive PTY sessions. It locates bash on the system instead of
+// trusting $SHELL: on targets where $SHELL points at a restricted shell — e.g.
+// VMware vCenter's /bin/appliancesh, which rejects -lc and demands its own auth
+// — $SHELL is unusable as a default. bash is probed via well-known absolute
+// paths first (the agent's PATH may be sparse under daemonization), then via
+// PATH lookup. Only when bash is absent does it fall back to $SHELL (skipping
+// known-restricted shells) and finally /bin/sh.
+func resolveShell() string {
 	if runtime.GOOS == "windows" {
+		// Prefer bash when Git Bash / WSL is available; else the command interpreter.
+		if p, err := exec.LookPath("bash"); err == nil {
+			return p
+		}
 		return "cmd.exe"
 	}
+	for _, c := range []string{"/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"} {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("bash"); err == nil {
+		return p
+	}
+	if s := os.Getenv("SHELL"); s != "" && !isRestrictedShell(s) {
+		return s
+	}
 	return "/bin/sh"
+}
+
+// isRestrictedShell reports whether name is a known restricted/non-POSIX shell
+// that must not be used with login-shell flags like -lc. Restricted shells have
+// their own command sets (and sometimes auth) and reject POSIX flags, so they
+// are never a safe default even when set as $SHELL. Listed here only after being
+// observed in the field: VMware vCenter VCSA ships /bin/appliancesh (backend:
+// main-shell).
+func isRestrictedShell(name string) bool {
+	switch filepath.Base(name) {
+	case "appliancesh", "main-shell":
+		return true
+	}
+	return false
 }
 
 // shellWrapArgs returns the argv to run `command` under the given shell so that
