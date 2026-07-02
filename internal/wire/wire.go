@@ -46,14 +46,6 @@ const (
 	MsgSignal
 	MsgStreamChunk // agent -> hub: async stdout/stderr data for a session
 	MsgExit        // agent -> hub: authoritative process exit for a one-shot exec
-	MsgFSRead
-	MsgFSReadResult
-	MsgFSWrite
-	MsgFSWriteResult
-	MsgFSList
-	MsgFSListResult
-	MsgFSStat
-	MsgFSStatResult
 	MsgGoodbye
 	MsgError
 	// Chunked file transfer (v1 protocol extension). Open returns a session id
@@ -105,22 +97,6 @@ func (m MsgType) String() string {
 		return "StreamChunk"
 	case MsgExit:
 		return "Exit"
-	case MsgFSRead:
-		return "FSRead"
-	case MsgFSReadResult:
-		return "FSReadResult"
-	case MsgFSWrite:
-		return "FSWrite"
-	case MsgFSWriteResult:
-		return "FSWriteResult"
-	case MsgFSList:
-		return "FSList"
-	case MsgFSListResult:
-		return "FSListResult"
-	case MsgFSStat:
-		return "FSStat"
-	case MsgFSStatResult:
-		return "FSStatResult"
 	case MsgGoodbye:
 		return "Goodbye"
 	case MsgError:
@@ -182,7 +158,6 @@ type Envelope struct {
 // Capabilities advertises what an agent supports.
 type Capabilities struct {
 	ConcurrencyCap int    `json:"concurrency_cap"`
-	MaxFileSize    int64  `json:"max_file_size"`
 	AgentVersion   string `json:"agent_version"`
 }
 
@@ -293,62 +268,6 @@ type Exit struct {
 	Sid      string `json:"sid,omitempty"`
 	ExitCode int32  `json:"exit_code"`
 	Signal   string `json:"signal,omitempty"`
-}
-
-type FSRead struct {
-	Path string `json:"path"`
-}
-
-type FSReadResult struct {
-	Data   []byte `json:"data,omitempty"`
-	Err    string `json:"err,omitempty"`
-	Size   int64  `json:"size,omitempty"`
-	Sha256 string `json:"sha256,omitempty"`
-}
-
-type FSWrite struct {
-	Path string `json:"path"`
-	Data []byte `json:"data"`
-	Mode uint32 `json:"mode,omitempty"` // os.FileMode; 0 => 0644
-}
-
-type FSOpResult struct {
-	Err    string `json:"err,omitempty"`
-	Size   int64  `json:"size,omitempty"`
-	Sha256 string `json:"sha256,omitempty"`
-}
-
-type DirEntry struct {
-	Name  string `json:"name"`
-	Size  int64  `json:"size"`
-	Mode  uint32 `json:"mode"`
-	IsDir bool   `json:"is_dir"`
-}
-
-type FSList struct {
-	Path string `json:"path"`
-}
-
-type FSListResult struct {
-	Entries []DirEntry `json:"entries,omitempty"`
-	Err     string     `json:"err,omitempty"`
-}
-
-type FSStat struct {
-	Path string `json:"path"`
-}
-
-type FileInfo struct {
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	Mode      uint32 `json:"mode"`
-	IsDir     bool   `json:"is_dir"`
-	ModTimeMs int64  `json:"mod_time_ms"`
-}
-
-type FSStatResult struct {
-	Stat *FileInfo `json:"stat,omitempty"`
-	Err  string    `json:"err,omitempty"`
 }
 
 // --- Chunked file transfer (v1 extension) ---

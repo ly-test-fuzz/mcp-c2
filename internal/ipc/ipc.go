@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	maxMsg    = 384 << 20 // 384 MiB — historical limit (file_read/file_write once passed full payload over IPC). upload/download now carry only paths + result metadata; left generously.
+	maxMsg    = 16 << 20 // 16 MiB guard per IPC frame. upload/download carry only paths + transfer metadata; chunk bytes stay on the hub<->agent transport plane and never cross IPC.
 	handshake = "DBGMCP-IPC-v1"
 )
 

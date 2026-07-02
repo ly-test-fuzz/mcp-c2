@@ -26,7 +26,6 @@ import (
 // Default caps advertised when not overridden.
 const (
 	DefaultConcurrencyCap = 8
-	DefaultMaxFileSize    = 256 << 20 // 256 MiB
 )
 
 // Options configure an Agent.
@@ -104,7 +103,6 @@ func (a *Agent) sendHello() error {
 		Shell:    shell,
 		Caps: wire.Capabilities{
 			ConcurrencyCap: a.opts.Cap,
-			MaxFileSize:    DefaultMaxFileSize,
 			AgentVersion:   "0.1.0",
 		},
 	}
