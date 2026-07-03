@@ -4,9 +4,10 @@
 //
 // Usage:
 //
-//	DBGMCP_HUB_SOCKET=<path> DBGMCP_HUB_TOKEN=<hex> debugmcp-probe [method]
+//	DBGMCP_HUB_ADDR=unix:/path|tcp:host:port DBGMCP_HUB_TOKEN=<hex> debugmcp-probe [method]
 //
 // method defaults to "list_targets"; any hub method works (e.g. status, list_sessions).
+// DBGMCP_HUB_SOCKET is accepted as a backward-compat alias for "unix:$DBGMCP_HUB_SOCKET".
 package main
 
 import (
@@ -20,10 +21,15 @@ import (
 )
 
 func main() {
-	socket := os.Getenv("DBGMCP_HUB_SOCKET")
+	addr := os.Getenv("DBGMCP_HUB_ADDR")
+	if addr == "" {
+		if sock := os.Getenv("DBGMCP_HUB_SOCKET"); sock != "" {
+			addr = "unix:" + sock
+		}
+	}
 	token := os.Getenv("DBGMCP_HUB_TOKEN")
-	if socket == "" || token == "" {
-		fmt.Fprintln(os.Stderr, "debugmcp-probe: DBGMCP_HUB_SOCKET and DBGMCP_HUB_TOKEN env vars required")
+	if addr == "" || token == "" {
+		fmt.Fprintln(os.Stderr, "debugmcp-probe: DBGMCP_HUB_ADDR (unix:/path or tcp:host:port) and DBGMCP_HUB_TOKEN env vars required")
 		os.Exit(2)
 	}
 	method := "list_targets"
@@ -36,7 +42,11 @@ func main() {
 		params = json.RawMessage(os.Args[2])
 	}
 
-	c, err := ipc.Dial(context.Background(), "unix", socket, token)
+	network, address, err := ipc.ParseListenSpec(addr)
+	if err != nil {
+		log.Fatalf("parse addr: %v", err)
+	}
+	c, err := ipc.Dial(context.Background(), network, address, token)
 	if err != nil {
 		log.Fatalf("dial hub: %v", err)
 	}
