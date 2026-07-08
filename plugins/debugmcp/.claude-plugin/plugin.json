@@ -1,0 +1,8 @@
+{
+  "name": "debugmcp",
+  "description": "debugMcp C2 风格 MCP：三平面架构（hub 常驻 / 目标机 agent 回连 / stdio shim 代理 MCP 工具调用）。自带全平台预编译 Go 二进制，装即用。四个 skill：install（本机 hub+shim+systemd+MCP 配置）/ deploy（投递 agent 到目标机）/ usage（使用指南，含 upload/download 单文件+目录两种模式）/ uninstall（卸载本机服务+MCP）。仅用于授权安全测试环境——传输层 Noise PSK 双向认证，但 0.0.0.0 端口暴露面仅由 PSK 保护，配错即 RCE。",
+  "version": "1.0",
+  "author": {
+    "name": "demo"
+  }
+}

@@ -21,9 +21,11 @@ import (
 	"debugmcp/internal/audit"
 	"debugmcp/internal/hub"
 	"debugmcp/internal/ipc"
+	"debugmcp/internal/version"
 )
 
 func main() {
+	version.RegisterFlag(flag.CommandLine, "debugmcp-hub")
 	var (
 		listen       = flag.String("listen", "127.0.0.1:7777", "TCP addr for C2 agents")
 		allowInbound = flag.Bool("allow-inbound", false, "allow binding a non-loopback address (required for 0.0.0.0; warning: RCE surface)")

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "debugmcp-marketplace",
+  "description": "debugMcp — C2 风格 MCP，为难以 SSH 的目标机提供 SSH 替代方案。由 Claude Code 驱动：hub 常驻 + 目标机 agent 回连 + shim 代理 MCP 工具调用。本 marketplace 自带全平台预编译 Go 二进制（hub/shim/cli/probe + 4 平台 client agent），装即用、无需 Go 环境。仅用于授权安全测试环境。",
+  "owner": {
+    "name": "demo"
+  },
+  "plugins": [
+    {
+      "name": "debugmcp",
+      "source": "./plugins/debugmcp",
+      "description": "debugMcp C2 MCP：三平面架构（hub 常驻 / agent 回连 / stdio shim 代理 MCP）。自带全平台预编译二进制。四个 skill：install（本机 hub+shim+systemd+MCP 配置）/ deploy（投递 agent 到目标机）/ usage（使用指南，含 upload/download 单文件+目录两种模式）/ uninstall（卸载本机服务+MCP）。仅用于授权安全测试环境。"
+    }
+  ]
+}

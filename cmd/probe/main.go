@@ -18,9 +18,11 @@ import (
 	"os"
 
 	"debugmcp/internal/ipc"
+	"debugmcp/internal/version"
 )
 
 func main() {
+	version.HandleEarly("debugmcp-probe")
 	addr := os.Getenv("DBGMCP_HUB_ADDR")
 	if addr == "" {
 		if sock := os.Getenv("DBGMCP_HUB_SOCKET"); sock != "" {

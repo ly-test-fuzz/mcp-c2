@@ -1,6 +1,6 @@
-# Binary output
-bin/
-dist/
+# Binary output (build artifacts — NOT the plugin's bundled assets/bin/)
+/bin/
+/dist/
 
 # Certificate artifacts (DO NOT commit private keys)
 certs/

@@ -1,65 +1,64 @@
 # 部署运维
 
-本机（操作者侧）部署：hub 跑成 systemd service 常驻，Claude Code 通过全局 MCP 配置接入 shim。
+debugMcp 已做成 Claude Code plugin，自带全平台预编译二进制，装即用、无需 Go 环境。
+**推荐用 plugin 的三个 skill 完成全部部署/投递/卸载**，本文档仅作总览与手动回退参考。
 
-## 前置
+## 推荐路径：Claude Code plugin
 
-```bash
-# 编译三端产物到 dist/
-./scripts/build.sh
+在 Claude Code 里添加本仓库为本地 marketplace，然后装 plugin：
+
+```
+/plugin marketplace add /home/demo/Desktop/project/debugmcp/mcp-c2
+/plugin install debugmcp@debugmcp-marketplace
+/reload-plugins
 ```
 
-## 1. 安装二进制到 PATH
+装完后三个 skill（重启 Claude Code 后会话可加载）：
+
+| skill | 干什么 | 在哪台机器 |
+|---|---|---|
+| `/debugmcp:install` | 装 hub+shim+cli+probe 二进制、systemd service、Claude Code 全局 MCP 配置 | 本机（操作者侧） |
+| `/debugmcp:deploy` | 投递 agent 二进制到目标机、回连 hub、验证 | 目标机 |
+| `/debugmcp:uninstall` | 停删 systemd、删本机二进制、删 MCP 配置、可选删 state | 本机 |
+
+典型流程：`install`（本机起 hub）→ `deploy`（目标机回连）→ 用 MCP 工具操作目标机 →
+`uninstall`（清本机）+ deploy skill 的 Reference（清目标机 agent）。
+
+plugin 自带资产：`hub/shim/cli/probe`（linux/amd64）+ 4 平台 client agent
+（linux amd64/arm64、windows amd64/arm64）+ systemd unit 模板，约 29MB。
+版本号由 `scripts/build.sh` 从 git describe 注入，每个二进制 `-version` 可查。
+
+## 手动回退（不用 plugin）
+
+若不想用 plugin、要手动部署，用编译脚本的 `install` 子命令一站式装本机端：
 
 ```bash
-sudo install -m 0755 dist/hub/debugmcp-hub dist/hub/debugmcp-cli dist/hub/debugmcp-probe \
-     dist/shim/debugmcp-shim /usr/local/bin/
+./scripts/build.sh install            # 构建 + 装到 /usr/local/bin（需 sudo）
 ```
 
-## 2. 创建 hub state 目录
-
-PSK / IPC token / hub.sock / 审计日志都落在这里，权限 0700。
+systemd unit 用模板渲染（plugin install skill 也是这么干的）：
 
 ```bash
-mkdir -p ~/.debugmcp && chmod 700 ~/.debugmcp
-```
-
-## 3. 安装 systemd service（hub 常驻 + 开机自启）
-
-`deploy/debugmcp-hub.service` 默认监听 `0.0.0.0:7777`（带 `--allow-inbound`），让目标机 agent 能回连。
-
-```bash
-sudo install -m 0644 deploy/debugmcp-hub.service /etc/systemd/system/
+sed -e "s|__USER__|$(whoami)|g" \
+    -e "s|__STATE_DIR__|$HOME/.debugmcp|g" \
+    -e "s|__BINDIR__|/usr/local/bin|g" \
+    -e "s|__LISTEN__|0.0.0.0:7777|g" \
+    -e "s|__ALLOW_INBOUND__|-allow-inbound|g" \
+    deploy/debugmcp-hub.service.template | sudo tee /etc/systemd/system/debugmcp-hub.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now debugmcp-hub.service
 ```
 
-常用命令：
-
-```bash
-sudo systemctl status debugmcp-hub        # 状态
-sudo systemctl restart debugmcp-hub       # 重启
-sudo journalctl -u debugmcp-hub -f        # 实时日志
-```
-
-> **安全**：`0.0.0.0:7777` 把 C2 端口暴露到网络，仅由 PSK 保护（配错即 RCE）。
-> 不要把 PSK 泄漏给目标机以外的人。若 agent 不需要跨网络回连，改成 `127.0.0.1:7777`
-> 并去掉 `--allow-inbound` 最安全。
-
-## 4. 配置 Claude Code 全局 MCP（user scope）
-
-hub 首次启动会生成 IPC token，从 state 目录读取：
+Claude Code 全局 MCP 配置（user scope，所有项目可用）：
 
 ```bash
 TOKEN=$(cat ~/.debugmcp/ipc.token)
-```
-
-用户级（user scope）配置由 Claude Code 存在 `~/.claude.json` 的**顶层 `mcpServers`** 键（所有项目可用）。**用 CLI 写入最安全**（避免手编这个含大量状态的大文件）：
-
-```bash
 claude mcp add-json --scope user debugmcp \
-  "{\"command\":\"/usr/local/bin/debugmcp-shim\",\"env\":{\"DBGMCP_HUB_SOCKET\":\"$HOME/.debugmcp/hub.sock\",\"DBGMCP_HUB_TOKEN\":\"$TOKEN\"}}"
+  "{\"command\":\"/usr/local/bin/debugmcp-shim\",\"env\":{\"DBGMCP_HUB_ADDR\":\"unix:$HOME/.debugmcp/hub.sock\",\"DBGMCP_HUB_TOKEN\":\"$TOKEN\"}}"
 ```
+
+> 注意环境变量是 `DBGMCP_HUB_ADDR`（`unix:/path` 或 `tcp:host:port`），
+> 旧的 `DBGMCP_HUB_SOCKET` 仍兼容但已不推荐。
 
 验证：
 
@@ -68,30 +67,23 @@ claude mcp get debugmcp     # 应显示 Scope: User config
 claude mcp list             # debugmcp 出现且 Connected
 ```
 
-> **注意位置**：用户级 MCP 配置在 `~/.claude.json` 顶层 `mcpServers`，**不是** `~/.claude/.mcp.json`（后者 Claude Code 不读取）。手编时把条目放进顶层 `mcpServers`，不要嵌进 `projects.*.mcpServers`（那是 local scope，仅当前项目）。
-
-重启 Claude Code 后即可使用 debugmcp 工具。
-
-## 5. 状态查看
+## 状态查看
 
 ```bash
 debugmcp-cli                # hub 是否在跑 + 连接的 agent + 活跃 session
 debugmcp-cli targets        # 列出已连接的目标机
 debugmcp-cli sessions       # 列出活跃 session
 debugmcp-cli --json         # 裸 JSON
+sudo journalctl -u debugmcp-hub -f   # hub 实时日志
 ```
 
-## 6. 在目标机上部署 agent
+## 重编 / 刷新 plugin 资产
 
-目标机需要 `debugmcp-agent`（交叉编译产物，见 `dist/client/`）和 hub 的 PSK：
+改了 Go 代码后重编并刷新 plugin 资产（再 `/plugin update debugmcp@debugmcp-marketplace`）：
 
 ```bash
-# hub 日志或 ~/.debugmcp/psk.hex 里取 PSK
-debugmcp-agent -hub <操作者IP>:7777 -psk <PSK_HEX>
-# 默认会 daemonize 脱离父进程；调试时加 -no-daemon
+./scripts/build.sh assets plugins/debugmcp     # 全平台构建 + 整合到 assets/bin/
 ```
-
-回连成功后，本机 `debugmcp-cli targets` 即可看到该 agent。
 
 ## 凭据位置速查
 
@@ -103,3 +95,9 @@ debugmcp-agent -hub <操作者IP>:7777 -psk <PSK_HEX>
 | `~/.debugmcp/audit.jsonl` | 审计日志（append-only + fsync） | 仅本机查看 |
 
 PSK 与 IPC token 均 0600，不要提交到仓库（已在 `.gitignore`）。
+
+## 安全
+
+`0.0.0.0:7777` 把 C2 端口暴露到网络，仅由 PSK 保护（配错即 RCE）。不要把 PSK 泄漏给
+目标机以外的人。若 agent 不需要跨网络回连，把 `__LISTEN__` 改成 `127.0.0.1:7777` 并
+删掉 `__ALLOW_INBOUND__` 行最安全。

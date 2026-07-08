@@ -25,9 +25,11 @@ import (
 
 	"debugmcp/internal/hub"
 	"debugmcp/internal/ipc"
+	"debugmcp/internal/version"
 )
 
 func main() {
+	version.RegisterFlag(flag.CommandLine, "debugmcp-cli")
 	var (
 		socket = flag.String("socket", "", "hub IPC socket path (default: <state>/hub.sock)")
 		token  = flag.String("token", "", "hub IPC token hex (default: <state>/ipc.token)")

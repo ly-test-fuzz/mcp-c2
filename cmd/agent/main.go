@@ -14,9 +14,11 @@ import (
 	"syscall"
 
 	"debugmcp/internal/agent"
+	"debugmcp/internal/version"
 )
 
 func main() {
+	version.RegisterFlag(flag.CommandLine, "debugmcp-agent")
 	hubAddr := flag.String("hub", "127.0.0.1:7777", "hub host:port")
 	pskHex := flag.String("psk", "", "PSK hex (enrollment secret), or use -psk-file")
 	pskFile := flag.String("psk-file", "", "file containing PSK hex")

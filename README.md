@@ -24,18 +24,35 @@ Claude Code  --stdio MCP-->  shim  --Unix socket + MAC token-->  HUB  --Noise_NN
 
 ## 快速开始
 
+debugMcp 已做成 Claude Code plugin，自带全平台预编译二进制（hub/shim/cli/probe +
+4 平台 client agent），装即用、无需 Go 环境。**推荐用 plugin 完成部署**：
+
+```
+# 在 Claude Code 里添加本仓库为本地 marketplace，然后装 plugin
+/plugin marketplace add /home/demo/Desktop/project/debugmcp/mcp-c2
+/plugin install debugmcp@debugmcp-marketplace
+/reload-plugins
+# 重启 Claude Code 后会话即可加载三个 skill：
+#   /debugmcp:install     本机起 hub（systemd 常驻 + Claude Code 全局 MCP 配置）
+#   /debugmcp:deploy      投递 agent 到目标机、回连 hub
+#   /debugmcp:uninstall   清本机全套
+```
+
+不用 plugin、手动起的话：
+
 ```bash
 # 1. hub（在 ~/.debugmcp 下生成并持久化 PSK + IPC token，并打印它们）
-go run ./cmd/hub -listen 127.0.0.1:7777
-#   -> 输出：psk=<hex>  ipc=<path>  token=<hex>
+./scripts/build.sh install            # 构建 + 装到 /usr/local/bin
+debugmcp-hub -listen 127.0.0.1:7777   # -> 输出：psk=<hex>  ipc=<path>  token=<hex>
 
-# 2. 目标机上的 agent（用打印出来的 PSK）
-./debugmcp-agent -hub <操作者-ip>:7777 -psk <hex>
+# 2. 目标机上的 agent（用打印出来的 PSK；plugin 自带 4 平台预编译产物）
+debugmcp-agent -hub <操作者-ip>:7777 -psk-file <psk-file>
 #   （生产环境别加 -no-daemon，让它脱离启动它的 shell）
 
 # 3. Claude Code MCP 配置（stdio）
 #    command: debugmcp-shim
-#    env:     DBGMCP_HUB_SOCKET=<path>  DBGMCP_HUB_TOKEN=<hex>
+#    env:     DBGMCP_HUB_ADDR=unix:<path>  DBGMCP_HUB_TOKEN=<hex>
+#    （旧的 DBGMCP_HUB_SOCKET 仍兼容但已不推荐）
 ```
 
 若要把 agent 监听器绑定到非回环地址（真正的回调），传 `-allow-inbound`；hub 在没有该
@@ -77,7 +94,16 @@ go build ./...                       # linux
 GOOS=windows GOARCH=amd64 go build ./...   # 交叉编译
 go test ./...                        # 所有单测 + E2E 测试
 go test ./internal/wire -fuzz=FuzzReadFrame -fuzztime=30s   # 帧解析器 fuzz
+
+# 编译脚本（带版本注入 + install/assets 子命令）
+./scripts/build.sh                   # 全量构建到 dist/
+./scripts/build.sh install           # 构建本机端 + 装到 /usr/local/bin
+./scripts/build.sh assets            # 全平台构建 + 整合到 plugin assets/bin/
+./scripts/build.sh version           # 打印版本串（git describe）
 ```
+
+改了 Go 代码后刷新 plugin 资产：`./scripts/build.sh assets`，再在 Claude Code 里
+`/plugin update debugmcp@debugmcp-marketplace`。
 
 ## 状态（MVP —— Phase 0/1 纵向打通，Linux 优先）
 

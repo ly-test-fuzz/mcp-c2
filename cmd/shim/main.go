@@ -13,9 +13,11 @@ import (
 	"syscall"
 
 	"debugmcp/internal/shim"
+	"debugmcp/internal/version"
 )
 
 func main() {
+	version.HandleEarly("debugmcp-shim")
 	addr := os.Getenv("DBGMCP_HUB_ADDR")
 	if addr == "" {
 		// backward compat: DBGMCP_HUB_SOCKET was the unix-only form.
